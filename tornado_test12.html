@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Severe Weather Tracker - Pro Edition</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; font-family: -apple-system, sans-serif; background: #121212; color: white; }
+        #map { height: 100vh; width: 100vw; background: #eee; }
+
+        .ui-container {
+            position: absolute; top: 20px; left: 20px; z-index: 1000;
+            display: flex; flex-direction: column; gap: 15px; max-height: 90vh; pointer-events: none;
+        }
+
+        .legend, .json-box {
+            background: rgba(30, 30, 30, 0.95); padding: 15px; border-radius: 10px;
+            border: 1px solid #444; font-size: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5); pointer-events: auto;
+        }
+
+        .json-box {
+            width: 340px; max-height: 250px; overflow-y: auto;
+            font-family: 'Courier New', Courier, monospace;
+            white-space: pre-wrap; word-break: break-all;
+            color: #00ff00; border-left: 3px solid #ff0000;
+        }
+
+        .legend-item { display: flex; align-items: center; margin-bottom: 6px; }
+        .box { width: 16px; height: 16px; margin-right: 10px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.2); }
+
+        .legend-icon { width: 18px; height: 18px; margin-right: 8px; }
+
+        .ef-dot { width: 12px; height: 12px; border: 1px solid #fff; border-radius: 50%; display: inline-block; margin-right: 4px; }
+        .ef-container { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; margin-left: 26px; }
+
+        .wind-marker {
+            border-radius: 50%; border: 1px solid #fff;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: bold; font-size: 10px; color: #000;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.5); white-space: nowrap;
+        }
+
+        @keyframes pulse-emergency {
+            0% { stroke-width: 6; stroke-opacity: 0.8; }
+            50% { stroke-width: 12; stroke-opacity: 1; }
+            100% { stroke-width: 6; stroke-opacity: 0.8; }
+        }
+        .emergency-poly { animation: pulse-emergency 1.5s infinite; }
+
+        .filter-select {
+            background: #333; color: white; border: 1px solid #666;
+            border-radius: 4px; padding: 2px 5px; font-size: 11px;
+            cursor: pointer;
+        }
+        .filter-select:focus { outline: none; border-color: #aaa; }
+
+        .news-feed { margin-top: 10px; padding-top: 10px; border-top: 1px solid #ccc; font-size: 11px; }
+        .news-feed ul { padding-left: 15px; margin: 5px 0; }
+        .news-feed li { margin-bottom: 6px; }
+        .news-feed a { color: #0066cc; text-decoration: none; font-weight: 500;}
+        .news-feed a:hover { text-decoration: underline; }
+
+        .debug-box {
+            margin-bottom: 8px; padding: 6px; background: rgba(0,0,0,0.05);
+            border: 1px dashed #999; border-radius: 4px;
+            font-family: 'Courier New', monospace; font-size: 10px;
+            color: #d97706; word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="ui-container">
+        <div id="raw-json-output" class="json-box">Fetching and filtering storm reports...</div>
+
+        <div class="legend">
+            <div style="font-weight:bold; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; display: flex; justify-content: space-between; align-items: center;">
+                <span>MAP LEGEND</span>
+                <select id="timeFilter" class="filter-select" title="Filter Timeframe">
+                    <option value="168">Past 7 Days</option>
+                    <option value="24">Past 24 Hours</option>
+                </select>
+            </div>
+
+            <div class="legend-item" style="margin-bottom: 0;">
+                <svg viewBox="0 0 24 24" class="legend-icon" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M23,3H1L2.5,6H21.5L23,3M19.5,8H4.5L6,11H18L19.5,8M16.5,13H7.5L9,16H15L16.5,13M13.5,18H10.5L12,22L13.5,18Z" fill="#ffffff" stroke="#999" stroke-width="0.5"/>
+                </svg>
+                <span id="tornado-legend-text">📍 7-Day Tornado Touchdown</span>
+            </div>
+            <div class="ef-container" style="margin-bottom: 12px;">
+                <div title="EF0" class="ef-dot" style="background:#add8e6;"></div>
+                <div title="EF1" class="ef-dot" style="background:#00cc00;"></div>
+                <div title="EF2" class="ef-dot" style="background:#ffff00;"></div>
+                <div title="EF3" class="ef-dot" style="background:#ffa500;"></div>
+                <div title="EF4" class="ef-dot" style="background:#ff0000;"></div>
+                <div title="EF5" class="ef-dot" style="background:#800080;"></div>
+                <div title="Unrated" class="ef-dot" style="background:#000000;"></div>
+                <span style="font-size: 10px; color:#aaa; margin-left: 4px; line-height: 14px;">(EF0 - EF5)</span>
+            </div>
+
+            <div class="legend-item" style="margin-bottom: 0;">
+                <div class="ef-dot" style="background: transparent; border: none; font-size: 14px; display:flex; align-items:center; justify-content:center;">💨</div>
+                <span id="wind-legend-text" style="margin-left: 6px;">7-Day Wind Gusts</span>
+            </div>
+            <div class="ef-container" style="margin-bottom: 12px;">
+                <div title="< 58 mph" class="ef-dot" style="background:#ffff00;"></div>
+                <div title="58 - 74 mph" class="ef-dot" style="background:#ffa500;"></div>
+                <div title="75+ mph" class="ef-dot" style="background:#ff0000;"></div>
+            </div>
+
+            <div class="legend-item"><div class="box" style="background: #ff00ff;"></div> 🚨 Tornado Emergency</div>
+            <div class="legend-item"><div class="box" style="background: #ff0000;"></div> Tornado Warning</div>
+            <div class="legend-item"><div class="box" style="background: #ffa500;"></div> Severe T-Storm Warning</div>
+            <div class="legend-item"><div class="box" style="border: 2px dashed #ffff00;"></div> Tornado Watch</div>
+            <div class="legend-item"><div class="box" style="background: #00ff00; opacity: 0.5;"></div> Live Radar</div>
+            <div class="legend-item" style="margin-top: 10px; border-top: 1px solid #444; padding-top: 5px;"><div class="box" style="height: 4px; background: currentColor; align-self: center;"></div> ✅ Official NWS Tracks</div>
+        </div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    
+    <script>
+        const map = L.map('map', { zoomControl: true }).setView([38.5, -96], 4);
+
+        // Swapped to Esri World Street Map (Light Theme) to avoid OSM rate limits
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Tiles &copy; Esri',
+            className: 'map-tiles'
+        }).addTo(map);
+
+        window.newsCache = new Map();
+
+        // --- NEW: FETCH TIMEOUT WRAPPER ---
+        async function fetchWithTimeout(resource, options = {}) {
+            const { timeout = 8000 } = options; // 8 second timeout
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), timeout);
+            const response = await fetch(resource, {
+                ...options,
+                signal: controller.signal
+            });
+            clearTimeout(id);
+            return response;
+        }
+
+        function extractSmartKeywords(remark) {
+            if (!remark) return [];
+            const ignoreWords = ['TORNADO','TOUCHDOWN','REPORTED','TREES','POWER','LINES','SNAPPED','UPROOTED','DAMAGE','NWS','SURVEY','EMERGENCY','MANAGER','SPOTTER','LAW','ENFORCEMENT','COUNTY','MILES','NORTH','SOUTH','EAST','WEST','NEAR','ROAD','HIGHWAY','HWY','INTERSTATE','DOWNED','ROOF','MINOR','BRIEF','ESTIMATED','RADAR','INDICATED','THE','AND','WITH','FROM','THAT','THIS','WERE','WAS','HAVE','BEEN','JUST','OVER','YARDS','WIDE','SOME','SEVERAL','LARGE','SMALL','MANY','MORE','THAN'];
+            const rawWords = remark.toUpperCase().replace(/[^\w\s]/g, '').split(/\s+/);
+            const validKeywords = [];
+            for (const word of rawWords) {
+                if (word.length > 3 && isNaN(word) && !ignoreWords.includes(word)) {
+                    validKeywords.push(word);
+                }
+            }
+            return [...new Set(validKeywords)].slice(0, 2);
+        }
+
+        async function fetchTop3News(city, state, remark, containerId, cacheKey) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            if (window.newsCache.has(cacheKey)) {
+                container.innerHTML = window.newsCache.get(cacheKey);
+                return;
+            }
+
+            container.innerHTML = `<small style="color: #666;"><i>Fetching localized reports...</i></small>`;
+
+            try {
+                const keywords = extractSmartKeywords(remark);
+                let queryStr = "";
+                if (keywords.length > 0) {
+                    queryStr = `"${city}" ${keywords[0]} storm`;
+                } else {
+                    queryStr = `"${city}" ${state} tornado`;
+                }
+
+                const encodedQuery = encodeURIComponent(queryStr);
+                const apiKey = '1f7cbdea800147d7ab2bfcf30c326cfb';
+                const url = `https://newsapi.org/v2/everything?q=${encodedQuery}&sortBy=relevancy&pageSize=3&apiKey=${apiKey}`;
+
+                const response = await fetchWithTimeout(url, { timeout: 5000 });
+                const data = await response.json();
+                const debugBox = `<div class="debug-box"><b>🔍 Query Used:</b><br>${queryStr}</div>`;
+
+                if (data.status === "error") {
+                     container.innerHTML = `${debugBox}<small style="color: #ff4d4d;">Error: ${data.message}</small>`;
+                     return;
+                }
+
+                const topArticles = data.articles || [];
+                let newsHtml = debugBox;
+
+                if (topArticles.length === 0) {
+                    newsHtml += `<small style="color: #666;">No recent news found for this exact query.</small>`;
+                } else {
+                    newsHtml += `<strong>Top Local News:</strong><ul>`;
+                    topArticles.forEach(article => {
+                        const dateObj = new Date(article.publishedAt);
+                        const formattedDate = `${dateObj.getMonth() + 1}/${dateObj.getDate()}`;
+                        newsHtml += `<li><a href="${article.url}" target="_blank">${article.title}</a> <span style="color:#888; font-size: 9px;">(${formattedDate})</span></li>`;
+                    });
+                    newsHtml += `</ul>`;
+                }
+
+                container.innerHTML = newsHtml;
+                window.newsCache.set(cacheKey, newsHtml);
+
+            } catch (error) {
+                console.error("News fetch failed:", error);
+                container.innerHTML = `<small style="color: #ff4d4d;">Failed to load news.</small>`;
+            }
+        }
+
+        function getTornadoSvg(color) {
+            return `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M23,3H1L2.5,6H21.5L23,3M19.5,8H4.5L6,11H18L19.5,8M16.5,13H7.5L9,16H15L16.5,13M13.5,18H10.5L12,22L13.5,18Z" fill="${color}" stroke="#000000" stroke-width="0.5"/></svg>`;
+        }
+
+        function createTornadoIcon(color, widthInYards) {
+            let size = 24;
+            if (widthInYards) {
+                const addedSize = widthInYards / 25;
+                size = Math.min(64, size + addedSize);
+            }
+            const svgString = getTornadoSvg(color);
+            const svgUrl = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svgString);
+            return L.icon({
+                iconUrl: svgUrl,
+                iconSize: [size, size],
+                iconAnchor: [size / 2, size / 2],
+                popupAnchor: [0, -(size / 2)]
+            });
+        }
+
+        function createWindIcon(speed) {
+            let bgColor = '#ffff00';
+            if (speed >= 75) bgColor = '#ff0000';
+            else if (speed >= 58) bgColor = '#ffa500';
+            const displaySpeed = speed > 0 ? speed : '?';
+
+            return L.divIcon({
+                className: 'custom-wind-icon',
+                html: `<div class="wind-marker" style="background-color: ${bgColor}; width: 24px; height: 24px;">${displaySpeed}</div>`,
+                iconSize: [24, 24],
+                iconAnchor: [12, 12],
+                popupAnchor: [0, -12]
+            });
+        }
+
+        function getEFScale(feature) {
+            const remark = (feature.properties.remark || "").toUpperCase();
+            const match = remark.match(/\bEF\s*-?\s*([0-5])\b/);
+            if (match) return parseInt(match[1], 10);
+            const mag = feature.properties.magnitude ?? feature.properties.mag;
+            if (mag !== null && mag !== "" && !isNaN(mag)) {
+                const parsedMag = parseInt(mag, 10);
+                if (parsedMag > 0 && parsedMag <= 5) return parsedMag;
+            }
+            if (remark.includes("VIOLENT") || remark.includes("DEVASTATING")) return 4; 
+            if (remark.includes("CATASTROPHIC")) return 5;
+            return 'U';
+        }
+
+        function getTornadoWidth(feature) {
+            const remark = (feature.properties.remark || "").toUpperCase();
+            const match = remark.match(/(\d+(?:\.\d+)?)\s*(YARD|YD|MILE|MI)S?\s*WIDE/);
+            if (match) {
+                let val = parseFloat(match[1]);
+                let unit = match[2];
+                if (unit.startsWith('MI')) val = val * 1760;
+                return val;
+            }
+            return null;
+        }
+
+        function getEFColor(ef) {
+            switch(ef) {
+                case 0: return '#add8e6';
+                case 1: return '#00cc00';
+                case 2: return '#ffff00';
+                case 3: return '#ffa500';
+                case 4: return '#ff0000';
+                case 5: return '#800080';
+                default: return '#000000';
+            }
+        }
+
+        const radarLayer = L.tileLayer.wms("https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi", {
+            layers: 'nexrad-n0r-900913', format: 'image/png', transparent: true, opacity: 0.6
+        }).addTo(map);
+
+        const alertsGroup = L.layerGroup().addTo(map);
+        const tornadoReportsGroup = L.layerGroup().addTo(map);
+        const windReportsGroup = L.layerGroup();
+        const officialTracksGroup = L.layerGroup().addTo(map);
+
+        window.allTornadoFeatures = [];
+        window.allWindFeatures = [];
+
+        async function fetchAlerts() {
+            try {
+                const res = await fetchWithTimeout('https://api.weather.gov/alerts/active');
+                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+                const data = await res.json();
+                L.geoJSON(data, {
+                    filter: (f) => ["Tornado Warning", "Tornado Watch", "Severe Thunderstorm Warning"].includes(f.properties.event),
+                    style: (f) => {
+                        const event = f.properties.event;
+                        const desc = (f.properties.description || "").toUpperCase();
+                        if (desc.includes("TORNADO EMERGENCY")) return { color: "#ff00ff", weight: 8, fillOpacity: 0.6, className: 'emergency-poly' };
+                        if (event === "Tornado Warning") return { color: "#ff0000", weight: 5, fillOpacity: 0.3 };
+                        if (event === "Severe Thunderstorm Warning") return { color: "#ffa500", weight: 4, fillOpacity: 0.25 };
+                        return { color: "#ffff00", weight: 2, fillOpacity: 0.1, dashArray: "10, 10" };
+                    },
+                    onEachFeature: (f, l) => { l.bindPopup(`<b>${f.properties.event}</b><br><small>${f.properties.headline}</small>`); }
+                }).addTo(alertsGroup);
+            } catch (e) { 
+                console.error("Alerts fetch failed or timed out:", e); 
+            }
+        }
+
+        function renderReports(hours) {
+            tornadoReportsGroup.clearLayers();
+            windReportsGroup.clearLayers();
+
+            const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+            const filteredTornadoes = window.allTornadoFeatures.filter(f => !f.properties.valid || new Date(f.properties.valid) >= cutoff);
+            const filteredWind = window.allWindFeatures.filter(f => !f.properties.valid || new Date(f.properties.valid) >= cutoff);
+
+            L.geoJSON({ type: "FeatureCollection", features: filteredTornadoes }, {
+                pointToLayer: (feature, latlng) => {
+                    const efScale = getEFScale(feature);
+                    const widthYards = getTornadoWidth(feature);
+                    const color = getEFColor(efScale);
+                    return L.marker(latlng, { icon: createTornadoIcon(color, widthYards), zIndexOffset: 1000 });
+                },
+                onEachFeature: (f, l) => {
+                    const efScale = getEFScale(f);
+                    const widthYards = getTornadoWidth(f);
+                    const displayScale = efScale === 'U' ? 'Unrated/Preliminary' : `EF-${efScale}`;
+                    const displayWidth = widthYards ? `${widthYards} Yards` : 'Unknown';
+                    const timeStr = f.properties.valid ? new Date(f.properties.valid).toLocaleString() : 'Unknown';
+                    const newsContainerId = 'news-' + Math.random().toString(36).substr(2, 9);
+                    const cacheKey = `cache_${f.geometry.coordinates[1]}_${f.geometry.coordinates[0]}_${f.properties.valid}`;
+
+                    l.bindPopup(`
+                        <div style="color: black;">
+                            <b>TORNADO REPORT (Preliminary)</b><br>
+                            EF-Scale: ${displayScale}<br>Width: ${displayWidth}<br>Time: ${timeStr}<br>
+                            Location: ${f.properties.city}, ${f.properties.state}<br>
+                            <hr style="margin: 8px 0; border: 0; border-top: 1px solid #ddd;">
+                            <small>${f.properties.remark || 'No remarks provided.'}</small>
+                            <div id="${newsContainerId}" class="news-feed"><small style="color: #666;"><i>Click to load local news...</i></small></div>
+                        </div>
+                    `);
+                    l.featureData = f; l.newsContainerId = newsContainerId; l.cacheKey = cacheKey;
+                }
+            }).addTo(tornadoReportsGroup);
+
+            L.geoJSON({ type: "FeatureCollection", features: filteredWind }, {
+                pointToLayer: (feature, latlng) => L.marker(latlng, { icon: createWindIcon(feature.properties.magnitude || 0) }),
+                onEachFeature: (f, l) => {
+                    const speed = f.properties.magnitude || 'Unknown';
+                    const timeStr = f.properties.valid ? new Date(f.properties.valid).toLocaleString() : 'Unknown';
+                    l.bindPopup(`
+                        <div style="color: black;">
+                            <b>WIND GUST REPORT</b><br>Speed: ${speed} mph<br>Time: ${timeStr}<br>
+                            Location: ${f.properties.city}, ${f.properties.state}<br>Source: ${f.properties.source}<br>
+                            <hr style="margin: 8px 0; border: 0; border-top: 1px solid #ddd;">
+                            <small>${f.properties.remark || 'No remarks provided.'}</small>
+                        </div>
+                    `);
+                }
+            }).addTo(windReportsGroup);
+
+            const jsonDisplay = document.getElementById('raw-json-output');
+            const timeText = hours === 24 ? "past 24 hours" : "past 7 days";
+            document.getElementById('tornado-legend-text').innerText = hours === 24 ? "📍 24-Hour Tornado Touchdown" : "📍 7-Day Tornado Touchdown";
+            document.getElementById('wind-legend-text').innerText = hours === 24 ? "24-Hour Wind Gusts" : "7-Day Wind Gusts";
+            
+            // Only update the JSON string if we actually pulled data successfully
+            if (window.allTornadoFeatures.length > 0 || window.allWindFeatures.length > 0) {
+                jsonDisplay.textContent = `// Found ${filteredTornadoes.length} Tornado(es) and ${filteredWind.length} Wind Reports in the ${timeText}.\n` + JSON.stringify({ tornadoes: filteredTornadoes.length, wind_reports: filteredWind.length }, null, 2);
+            }
+        }
+
+        async function fetchStormReports() {
+            const jsonDisplay = document.getElementById('raw-json-output');
+            const now = new Date();
+            const lastWeek = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+            const sts = lastWeek.toISOString(); const ets = now.toISOString();
+            const url = `https://mesonet.agron.iastate.edu/geojson/lsr.geojson?sts=${sts}&ets=${ets}`;
+
+            try {
+                const res = await fetchWithTimeout(url);
+                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+                const data = await res.json();
+                
+                if (data.features) {
+                    window.allTornadoFeatures = data.features.filter(f => f.properties.typetext && f.properties.typetext.toUpperCase() === 'TORNADO');
+                    window.allWindFeatures = data.features.filter(f => f.properties.typetext && f.properties.typetext.toUpperCase().includes('WND'));
+                    renderReports(168);
+                } else {
+                    jsonDisplay.textContent = "// Warning: IEM API returned no features block.";
+                }
+            } catch (e) { 
+                console.error("Storm reports fetch failed:", e);
+                jsonDisplay.textContent = `// Error fetching data: ${e.message}\n// IEM database may be unreachable.`;
+            }
+        }
+
+        async function fetchOfficialRatings() {
+            const datUrl = `https://services.dat.noaa.gov/arcgis/rest/services/nws_damageassessmenttoolkit/DamageViewer/FeatureServer/1/query?where=1%3D1&outFields=*&f=geojson&resultRecordCount=50&orderByFields=OBJECTID%20DESC`;
+
+            try {
+                const res = await fetchWithTimeout(datUrl);
+                if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+                const data = await res.json();
+                
+                if(data.features) {
+                    L.geoJSON(data, {
+                        style: function(feature) {
+                            const p = feature.properties;
+                            const rawEf = p.efscale ?? p.EFSCALE ?? p.damage_rating ?? "";
+                            let efNum = 'U';
+                            const match = String(rawEf).match(/\d/);
+                            if (match) efNum = parseInt(match[0]);
+                            
+                            return { color: getEFColor(efNum === 'U' ? 'U' : efNum), weight: 6, opacity: 0.9 };
+                        },
+                        onEachFeature: function(f, l) {
+                            const p = f.properties;
+                            
+                            // 1. Extract Official Rating
+                            const rawEf = p.efscale ?? p.EFSCALE ?? p.damage_rating ?? "";
+                            let efNum = 'U';
+                            const match = String(rawEf).match(/\d/);
+                            if (match) efNum = parseInt(match[0]);
+                            const efScaleStr = efNum === 'U' ? 'Unrated' : `EF${efNum}`;
+                            
+                            // 2. Extract Data
+                            const rawDate = p.stormdate ?? p.event_date ?? p.EVENT_DATE;
+                            const timeStr = rawDate ? new Date(rawDate).toLocaleString() : 'Unknown';
+                            const maxWidth = p.maxwidth ?? p.MAX_WIDTH ?? p.width ?? 0;
+                            const length = p.length ?? p.LENGTH ?? 'Unknown';
+                            const comments = p.comments ?? p.COMMENTS ?? 'Official NWS path via Damage Assessment Toolkit.';
+
+                            const popupHtml = `
+                                <div style="color: black;">
+                                    <b>✅ OFFICIAL NWS SURVEY TRACK</b><br>
+                                    Rating: ${efScaleStr}<br>Date: ${timeStr}<br>
+                                    Max Width: ${maxWidth} yards<br>Length: ${length} miles<br>
+                                    <hr style="margin: 8px 0; border: 0; border-top: 1px solid #ddd;">
+                                    <small>${comments}</small>
+                                </div>
+                            `;
+                            
+                            l.bindPopup(popupHtml);
+
+                            // --- NEW: Drop an Official Icon at the start of the path ---
+                            let startLat, startLng;
+                            try {
+                                // GeoJSON coordinates are [Longitude, Latitude]
+                                if (f.geometry.type === "Point") {
+                                    startLat = f.geometry.coordinates[1];
+                                    startLng = f.geometry.coordinates[0];
+                                } else if (f.geometry.type === "LineString") {
+                                    startLat = f.geometry.coordinates[0][1];
+                                    startLng = f.geometry.coordinates[0][0];
+                                } else if (f.geometry.type === "Polygon") {
+                                    startLat = f.geometry.coordinates[0][0][1];
+                                    startLng = f.geometry.coordinates[0][0][0];
+                                }
+                            } catch(err) {
+                                // Fallback if the geometry array is unexpectedly shallow
+                                const center = l.getBounds().getCenter();
+                                startLat = center.lat; startLng = center.lng;
+                            }
+
+                            if (startLat && startLng) {
+                                const iconColor = getEFColor(efNum === 'U' ? 'U' : efNum);
+                                const parsedWidth = parseFloat(maxWidth) || 0; 
+                                const officialIcon = createTornadoIcon(iconColor, parsedWidth);
+                                
+                                const marker = L.marker([startLat, startLng], { 
+                                    icon: officialIcon, 
+                                    zIndexOffset: 2000 // Forces NWS icons above preliminary black icons
+                                });
+                                marker.bindPopup(popupHtml);
+                                marker.addTo(officialTracksGroup);
+                            }
+                        }
+                    }).addTo(officialTracksGroup);
+                }
+            } catch (e) { 
+                console.error("Official ratings fetch failed:", e); 
+            }
+        }
+
+        document.getElementById('timeFilter').addEventListener('change', (e) => renderReports(parseInt(e.target.value, 10)));
+
+        map.on('popupopen', function(e) {
+            const layer = e.popup._source;
+            if (layer && layer.featureData && layer.newsContainerId) {
+                const p = layer.featureData.properties;
+                fetchTop3News(p.city, p.state, p.remark, layer.newsContainerId, layer.cacheKey);
+            }
+        });
+
+        // Initialize Data
+        fetchAlerts();
+        fetchStormReports();
+        fetchOfficialRatings();
+
+        const overlays = {
+            "<span style='color: #00ff00'>📡 Live Radar</span>": radarLayer,
+            "<span style='color: #ff4d4d'>🌪️ Active Alerts</span>": alertsGroup,
+            [`${getTornadoSvg('#000000').replace('<svg', '<svg width="16" height="16" style="vertical-align: middle;"')} 📍 Preliminary Reports`]: tornadoReportsGroup,
+            "✅ Official NWS Tracks": officialTracksGroup,
+            "💨 Wind Gusts (Off by default)": windReportsGroup
+        };
+        L.control.layers(null, overlays, { collapsed: false }).addTo(map);
+    </script>
+</body>
+</html>
